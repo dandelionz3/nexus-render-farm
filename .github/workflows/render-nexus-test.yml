@@ -70,23 +70,36 @@ jobs:
           key: blender-4.5.3-linux-x64
 
       - name: Download Blender 4.5.3 LTS (cache miss only, with retries)
+        # Pelajaran run 44600190210: download.blender.org sempat mengembalikan
+        # halaman error 61 KB (bukan tarball ~300 MB) 3x berturut-turut ke job
+        # s7-09 — curl tanpa -f menganggapnya sukses, baru tar -tf yang gagal.
+        # Fix: curl -f (gagal di HTTP error), cek ukuran >200 MB sebelum tar,
+        # dan fallback ke mirror OCF Berkeley kalau primer gagal 3x.
         if: steps.cache-blender.outputs.cache-hit != 'true'
         run: |
           set -euo pipefail
-          for i in 1 2 3; do
-            echo "Download attempt $i"
-            if curl -L --retry 5 --retry-delay 10 --retry-all-errors \
-                -o blender.tar.xz \
-                https://download.blender.org/release/Blender4.5/blender-4.5.3-linux-x64.tar.xz \
-                && tar -tf blender.tar.xz >/dev/null; then
-              echo "Download OK on attempt $i"
-              break
-            fi
-            echo "Download attempt $i failed, retrying in 30s..."
-            rm -f blender.tar.xz
-            sleep 30
-            if [ "$i" = 3 ]; then echo "FAIL: Blender download failed 3x"; exit 1; fi
+          URLS=(
+            "https://download.blender.org/release/Blender4.5/blender-4.5.3-linux-x64.tar.xz"
+            "https://mirrors.ocf.berkeley.edu/blender/release/Blender4.5/blender-4.5.3-linux-x64.tar.xz"
+          )
+          OK=0
+          for URL in "${URLS[@]}"; do
+            for i in 1 2 3; do
+              echo "Download attempt $i from $URL"
+              if curl -fSL --retry 3 --retry-delay 10 --retry-all-errors \
+                  -o blender.tar.xz "$URL" \
+                  && [ "$(stat -c%s blender.tar.xz)" -gt 200000000 ] \
+                  && tar -tf blender.tar.xz >/dev/null; then
+                echo "Download OK: $URL attempt $i ($(stat -c%s blender.tar.xz) bytes)"
+                OK=1
+                break 2
+              fi
+              echo "Download attempt $i from $URL failed, retrying in 30s..."
+              rm -f blender.tar.xz
+              sleep 30
+            done
           done
+          if [ "$OK" != 1 ]; then echo "FAIL: Blender download failed (primer + mirror)"; exit 1; fi
           tar -xf blender.tar.xz
           ./blender-4.5.3-linux-x64/blender --version
 
